@@ -7,7 +7,7 @@ export type AppLocale = (typeof locales)[number];
 
 export const pathnames: Pathnames<typeof locales> = {
 	"/": "/",
-	"/unitaid": "/unitaid",
+	"/example-module": "/example-module",
 };
 
 export const localePrefix: LocalePrefix<typeof locales> = "always";

@@ -2,8 +2,8 @@
 # Last matching pattern wins. Everything belongs to the internal team unless
 # listed below; the external team approves changes inside its module folders.
 
-*                                   @UNOPS/rbm-dashboard-maintainers
+*                                   @rbm-data-initiative/rbm-dashboard-maintainers
 
-/src/app/*/unitaid/                 @UNOPS/rbm-module-unitaid
-/src/app/api/unitaid/               @UNOPS/rbm-module-unitaid
-/public/unitaid/                    @UNOPS/rbm-module-unitaid
+/src/app/*/example-module/          @rbm-data-initiative/rbm-dashboard-maintainers
+/src/app/api/example-module/        @rbm-data-initiative/rbm-dashboard-maintainers
+/public/example-module/             @rbm-data-initiative/rbm-dashboard-maintainers
