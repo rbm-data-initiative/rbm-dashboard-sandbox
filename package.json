@@ -1,5 +1,5 @@
 {
-	"name": "rbm-dashboard-sandbox",
+	"name": "rbm-module-unitaid",
 	"version": "0.1.0",
 	"private": true,
 	"engines": {
@@ -12,7 +12,9 @@
 		"lint": "next lint",
 		"check:contract": "node scripts/check-contract.mjs",
 		"format": "biome format --write .",
-		"format:check": "biome format ."
+		"format:check": "biome format .",
+		"module:init": "node scripts/init-module.mjs",
+		"host:sync": "node scripts/sync-host.mjs"
 	},
 	"dependencies": {
 		"clsx": "^2.1.1",

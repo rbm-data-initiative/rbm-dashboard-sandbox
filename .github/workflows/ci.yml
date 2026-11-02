@@ -5,6 +5,9 @@ on:
     branches: ["**"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: Lint, contract and build
@@ -28,10 +31,13 @@ jobs:
       - name: Format check (Biome)
         run: npm run format:check
 
+      # PROTECTED_MANIFEST_SHA256 is a repository variable that only admins can
+      # edit. When set, scripts/protected-files.json must match it, so a
+      # re-snapshot committed by the external team fails here even before review.
       - name: Contract check
         run: npm run check:contract
+        env:
+          PROTECTED_MANIFEST_SHA256: ${{ vars.PROTECTED_MANIFEST_SHA256 }}
 
       - name: Build (offline, bundled sample data)
         run: npm run build
-        env:
-          UNITAID_NOTIFICATIONS_TOKEN: ci-token

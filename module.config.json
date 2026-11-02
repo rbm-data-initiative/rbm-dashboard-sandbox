@@ -1,0 +1,11 @@
+{
+	"$comment": "Single source of truth for the module identity. Edit only through `npm run module:init` (internal team).",
+	"slug": "unitaid",
+	"namespace": "Unitaid",
+	"envPrefix": "UNITAID_",
+	"templateRepo": "UNOPS/rbm-sandbox",
+	"owners": {
+		"internal": "@UNOPS/rbm-dashboard-maintainers",
+		"external": "@UNOPS/rbm-module-unitaid"
+	}
+}

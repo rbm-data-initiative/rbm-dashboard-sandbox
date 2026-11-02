@@ -5,41 +5,51 @@
  * Verifies that the module respects the integration rules of the Global
  * Malaria Dashboard: files only inside the allowed folders, protected starter
  * files untouched, i18n parity, allowed imports, env-var discipline and an
- * approved dependency list.
+ * approved dependency list. The module identity (slug, namespace, env prefix)
+ * comes from module.config.json.
  *
  * Usage:
  *   node scripts/check-contract.mjs             # validate (exit 1 on failure)
  *   node scripts/check-contract.mjs --snapshot  # maintainer only: regenerate manifests
+ *   node scripts/check-contract.mjs --manifest-hash
+ *                                               # print the sha256 of protected-files.json
+ *
+ * When the environment variable PROTECTED_MANIFEST_SHA256 is set (CI reads it
+ * from a repository variable only admins can edit), the manifest must match it.
+ * This stops a re-snapshot committed by the external team from passing CI.
  *
  * Node 20, no dependencies.
  */
-import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import {
+	APPROVED_DEPS,
+	PROTECTED_MANIFEST,
+	fileSize,
+	modulePaths,
+	readConfig,
+	readJson,
+	sha256,
+	snapshot,
+	startsWithAny,
+	toPosix,
+	walk,
+} from "./lib/module.mjs";
 
 const ROOT = process.cwd();
-const SLUG = "unitaid";
-const NAMESPACE = "Unitaid";
-const ENV_PREFIX = "UNITAID_";
 
-const MODULE_PAGE = `src/app/[locale]/${SLUG}/`;
-const MODULE_API = `src/app/api/${SLUG}/`;
-const MODULE_PUBLIC = `public/${SLUG}/`;
+let config;
+try {
+	config = readConfig(ROOT);
+} catch (err) {
+	console.error(err.message);
+	process.exit(1);
+}
+const { slug: SLUG, namespace: NAMESPACE, envPrefix: ENV_PREFIX } = config;
+
+const { page: MODULE_PAGE, api: MODULE_API, public: MODULE_PUBLIC } = modulePaths(SLUG);
 const ALLOWED_PREFIXES = [MODULE_PAGE, MODULE_API, MODULE_PUBLIC];
 const MODULE_SRC_PREFIXES = [MODULE_PAGE, MODULE_API];
-
-const PROTECTED_MANIFEST = "scripts/protected-files.json";
-const APPROVED_DEPS = "scripts/approved-dependencies.json";
-
-const IGNORED_DIRS = new Set([".git", "node_modules", ".next", "out", "coverage", ".idea"]);
-const IGNORED_FILES = new Set([
-	"next-env.d.ts",
-	"tsconfig.tsbuildinfo",
-	".DS_Store",
-	"package-lock.json",
-]);
-const isIgnoredFile = (name) =>
-	IGNORED_FILES.has(name) || (name.startsWith(".env") && name !== ".env.example");
 
 const ALLOWED_HOST_IMPORTS = [
 	"@/navigation",
@@ -69,29 +79,15 @@ const REQUIRED_I18N_KEYS = [
 	`${NAMESPACE}.metadata.keywords`,
 	`${NAMESPACE}.title`,
 ];
-const SIDEBAR_KEY_PATTERN = new RegExp(`^[A-Za-z0-9]+_subitem_${SLUG}(_tooltip)?$`);
+const SIDEBAR_KEY_PATTERN = new RegExp(
+	`^[A-Za-z0-9]+_subitem_${SLUG.replace(/-/g, "_")}(_tooltip)?$`,
+);
 const MAX_PUBLIC_ASSET_BYTES = 5 * 1024 * 1024;
 const SOURCE_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 
 // ---------------------------------------------------------------- helpers
-const toPosix = (p) => p.split(path.sep).join("/");
-const rel = (abs) => toPosix(path.relative(ROOT, abs));
-const sha256 = (abs) => createHash("sha256").update(readFileSync(abs)).digest("hex");
-const startsWithAny = (p, prefixes) => prefixes.some((prefix) => p.startsWith(prefix));
-const readJson = (relPath) => JSON.parse(readFileSync(path.join(ROOT, relPath), "utf8"));
-
-function walk(dirAbs, out = []) {
-	for (const entry of readdirSync(dirAbs, { withFileTypes: true })) {
-		if (entry.isDirectory()) {
-			if (IGNORED_DIRS.has(entry.name)) continue;
-			walk(path.join(dirAbs, entry.name), out);
-		} else if (entry.isFile()) {
-			if (isIgnoredFile(entry.name)) continue;
-			out.push(rel(path.join(dirAbs, entry.name)));
-		}
-	}
-	return out.sort();
-}
+const abs = (relPath) => path.join(ROOT, relPath);
+const readRootJson = (relPath) => readJson(abs(relPath));
 
 function flatten(obj, prefix = "", out = {}) {
 	for (const [key, value] of Object.entries(obj)) {
@@ -107,33 +103,6 @@ const fail = (group, message) => {
 	(issues[group] ??= []).push(message);
 };
 
-// ---------------------------------------------------------------- snapshot
-function snapshot() {
-	// Approved dependencies first, so the manifest below also protects that file.
-	const pkg = readJson("package.json");
-	writeFileSync(
-		path.join(ROOT, APPROVED_DEPS),
-		`${JSON.stringify(
-			{ dependencies: pkg.dependencies ?? {}, devDependencies: pkg.devDependencies ?? {} },
-			null,
-			"\t",
-		)}\n`,
-	);
-	const files = {};
-	for (const file of walk(ROOT)) {
-		if (startsWithAny(file, ALLOWED_PREFIXES)) continue;
-		if (file === PROTECTED_MANIFEST) continue;
-		files[file] = sha256(path.join(ROOT, file));
-	}
-	writeFileSync(
-		path.join(ROOT, PROTECTED_MANIFEST),
-		`${JSON.stringify({ generatedAt: new Date().toISOString(), files }, null, "\t")}\n`,
-	);
-	console.log(
-		`Snapshot written: ${Object.keys(files).length} protected files, dependencies approved.`,
-	);
-}
-
 // ---------------------------------------------------------------- checks
 function checkPaths(allFiles, manifest) {
 	for (const file of allFiles) {
@@ -146,19 +115,34 @@ function checkPaths(allFiles, manifest) {
 }
 
 function checkProtected(manifest) {
+	if (manifest.slug && manifest.slug !== SLUG) {
+		fail(
+			"protected",
+			`${PROTECTED_MANIFEST} was generated for slug "${manifest.slug}" but module.config.json says "${SLUG}"`,
+		);
+	}
 	for (const [file, expected] of Object.entries(manifest.files)) {
-		const abs = path.join(ROOT, file);
-		if (!existsSync(abs)) {
+		if (!existsSync(abs(file))) {
 			fail("protected", `missing protected file: ${file}`);
 			continue;
 		}
-		if (sha256(abs) !== expected) fail("protected", `modified protected file: ${file}`);
+		if (sha256(abs(file)) !== expected) fail("protected", `modified protected file: ${file}`);
+	}
+	const expectedHash = process.env.PROTECTED_MANIFEST_SHA256?.trim();
+	if (expectedHash) {
+		const actual = sha256(abs(PROTECTED_MANIFEST));
+		if (actual !== expectedHash.toLowerCase()) {
+			fail(
+				"protected",
+				`${PROTECTED_MANIFEST} (sha256 ${actual}) does not match PROTECTED_MANIFEST_SHA256; only the internal team may re-snapshot`,
+			);
+		}
 	}
 }
 
 function checkRequiredFiles() {
 	for (const file of REQUIRED_MODULE_FILES) {
-		if (!existsSync(path.join(ROOT, file))) fail("paths", `required module file missing: ${file}`);
+		if (!existsSync(abs(file))) fail("paths", `required module file missing: ${file}`);
 	}
 }
 
@@ -167,10 +151,10 @@ function checkI18n() {
 	const flat = {};
 	for (const locale of locales) {
 		const file = `${MODULE_PAGE}i18n/${locale}.json`;
-		if (!existsSync(path.join(ROOT, file))) return;
+		if (!existsSync(abs(file))) return;
 		let json;
 		try {
-			json = readJson(file);
+			json = readRootJson(file);
 		} catch (err) {
 			fail("i18n", `${file}: invalid JSON (${err.message})`);
 			return;
@@ -188,7 +172,10 @@ function checkI18n() {
 			if (typeof value !== "string") fail("i18n", `${file}: "${key}" must be a string`);
 			else if (!value.trim()) fail("i18n", `${file}: "${key}" is empty`);
 			if (key.startsWith("Sidebar.") && !SIDEBAR_KEY_PATTERN.test(key.slice("Sidebar.".length))) {
-				fail("i18n", `${file}: Sidebar key "${key}" must match <group>_subitem_${SLUG}[_tooltip]`);
+				fail(
+					"i18n",
+					`${file}: Sidebar key "${key}" must match <group>_subitem_${SLUG.replace(/-/g, "_")}[_tooltip]`,
+				);
 			}
 		}
 	}
@@ -207,8 +194,8 @@ function checkI18n() {
 
 	// Module keys must not override shell keys of the host messages.
 	const baseFile = "messages/en.json";
-	if (existsSync(path.join(ROOT, baseFile))) {
-		const base = flatten(readJson(baseFile));
+	if (existsSync(abs(baseFile))) {
+		const base = flatten(readRootJson(baseFile));
 		for (const key of reference) {
 			if (key in base)
 				fail("i18n", `i18n/en.json: "${key}" collides with a host key in ${baseFile}`);
@@ -230,7 +217,7 @@ function listImports(source) {
 
 function checkImports(moduleSources) {
 	for (const file of moduleSources) {
-		const source = readFileSync(path.join(ROOT, file), "utf8");
+		const source = readFileSync(abs(file), "utf8");
 		for (const spec of listImports(source)) {
 			if (FORBIDDEN_IMPORT_PATTERNS.some((re) => re.test(spec))) {
 				fail("imports", `${file}: forbidden import "${spec}"`);
@@ -244,9 +231,7 @@ function checkImports(moduleSources) {
 				continue;
 			}
 			if (spec.startsWith(".")) {
-				const target = toPosix(
-					path.relative(ROOT, path.resolve(path.dirname(path.join(ROOT, file)), spec)),
-				);
+				const target = toPosix(path.relative(ROOT, path.resolve(path.dirname(abs(file)), spec)));
 				if (
 					!startsWithAny(`${target}/`, MODULE_SRC_PREFIXES) &&
 					!startsWithAny(target, MODULE_SRC_PREFIXES)
@@ -264,7 +249,7 @@ function checkImports(moduleSources) {
 function checkEnv(moduleSources) {
 	const envRe = /process\.env(?:\.([A-Za-z0-9_]+)|\[\s*["']([A-Za-z0-9_]+)["']\s*\])/g;
 	for (const file of moduleSources) {
-		const source = readFileSync(path.join(ROOT, file), "utf8");
+		const source = readFileSync(abs(file), "utf8");
 		const matches = [...source.matchAll(envRe)];
 		if (matches.length === 0) continue;
 		const allowedHere = ENV_ALLOWED_FILES.has(file) || file.startsWith(MODULE_API);
@@ -283,8 +268,8 @@ function checkEnv(moduleSources) {
 	}
 
 	const example = `${MODULE_PAGE}.env.example`;
-	if (existsSync(path.join(ROOT, example))) {
-		const lines = readFileSync(path.join(ROOT, example), "utf8").split(/\r?\n/);
+	if (existsSync(abs(example))) {
+		const lines = readFileSync(abs(example), "utf8").split(/\r?\n/);
 		for (const line of lines) {
 			const trimmed = line.trim();
 			if (!trimmed || trimmed.startsWith("#")) continue;
@@ -296,12 +281,12 @@ function checkEnv(moduleSources) {
 }
 
 function checkDependencies() {
-	if (!existsSync(path.join(ROOT, APPROVED_DEPS))) {
+	if (!existsSync(abs(APPROVED_DEPS))) {
 		fail("deps", `${APPROVED_DEPS} missing (run --snapshot as maintainer)`);
 		return;
 	}
-	const approved = readJson(APPROVED_DEPS);
-	const pkg = readJson("package.json");
+	const approved = readRootJson(APPROVED_DEPS);
+	const pkg = readRootJson("package.json");
 	for (const section of ["dependencies", "devDependencies"]) {
 		const current = pkg[section] ?? {};
 		const expected = approved[section] ?? {};
@@ -325,7 +310,7 @@ function checkDependencies() {
 function checkPublicAssets(allFiles) {
 	for (const file of allFiles) {
 		if (!file.startsWith(MODULE_PUBLIC)) continue;
-		const size = statSync(path.join(ROOT, file)).size;
+		const size = fileSize(abs(file));
 		if (size > MAX_PUBLIC_ASSET_BYTES) {
 			fail(
 				"paths",
@@ -336,20 +321,31 @@ function checkPublicAssets(allFiles) {
 }
 
 // ---------------------------------------------------------------- main
-const allFiles = walk(ROOT);
-
 if (process.argv.includes("--snapshot")) {
-	snapshot();
+	const count = snapshot(ROOT, config);
+	console.log(`Snapshot written: ${count} protected files, dependencies approved.`);
+	console.log(`Manifest sha256: ${sha256(abs(PROTECTED_MANIFEST))}`);
+	console.log("Update the PROTECTED_MANIFEST_SHA256 repository variable with the value above.");
 	process.exit(0);
 }
 
-if (!existsSync(path.join(ROOT, PROTECTED_MANIFEST))) {
+if (process.argv.includes("--manifest-hash")) {
+	if (!existsSync(abs(PROTECTED_MANIFEST))) {
+		console.error(`${PROTECTED_MANIFEST} missing.`);
+		process.exit(1);
+	}
+	console.log(sha256(abs(PROTECTED_MANIFEST)));
+	process.exit(0);
+}
+
+if (!existsSync(abs(PROTECTED_MANIFEST))) {
 	console.error(
 		`${PROTECTED_MANIFEST} missing. A maintainer must run: node scripts/check-contract.mjs --snapshot`,
 	);
 	process.exit(1);
 }
-const manifest = readJson(PROTECTED_MANIFEST);
+const allFiles = walk(ROOT);
+const manifest = readRootJson(PROTECTED_MANIFEST);
 const moduleSources = allFiles.filter(
 	(file) => startsWithAny(file, MODULE_SRC_PREFIXES) && SOURCE_EXT.has(path.extname(file)),
 );
@@ -366,8 +362,13 @@ checkPublicAssets(allFiles);
 const groups = Object.keys(issues);
 if (groups.length === 0) {
 	console.log(
-		`Contract OK: ${moduleSources.length} module source files, ${Object.keys(manifest.files).length} protected files verified.`,
+		`Contract OK (module "${SLUG}"): ${moduleSources.length} module source files, ${Object.keys(manifest.files).length} protected files verified.`,
 	);
+	if (!process.env.PROTECTED_MANIFEST_SHA256?.trim() && process.env.CI) {
+		console.log(
+			"::warning::PROTECTED_MANIFEST_SHA256 is not set; the manifest provenance was not verified.",
+		);
+	}
 	process.exit(0);
 }
 
