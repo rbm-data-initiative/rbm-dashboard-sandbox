@@ -18,6 +18,7 @@ This folder and `src/app/api/example-module/` are the only areas editable by the
 | `styles/` | Module's own CSS, classes prefixed with `.example-module-` |
 | `i18n/` | Module translations (`en`, `fr`, `pt`), same keys in all three |
 | `fonts/` | Fonts added by the module: `files/*.woff2` plus one `index.ts` using `next/font/local` (see `fonts/README.md`) |
+| `*.test.ts`, `__tests__/` | Vitest tests next to the code they cover (also allowed in `src/app/api/example-module/`); never copied to the main project |
 | `.env.example` | Every `EXAMPLE_MODULE_*` variable with an example value |
 | `INTEGRATION.md` | What the internal team needs to do outside the module |
 
@@ -30,6 +31,7 @@ This folder and `src/app/api/example-module/` are the only areas editable by the
 - No user-visible string outside `i18n/`.
 - Fonts: use the host fonts (`@/fonts`) or add your own under `fonts/`, see below. `next/font/google` is forbidden (the build has no network).
 - `npm run check:contract` validates all of this; CI runs the same command.
+- Tests are optional and run with `npm run test` (Vitest, Node environment, no DOM). See "Tests" below.
 
 ## Fonts
 
@@ -72,6 +74,22 @@ To add a typeface of your own:
 4. Record family, weights, licence and source in `INTEGRATION.md`, section 10.
 
 `npm run check:contract` fails on font files outside `fonts/files/`, on formats other than `.woff2`, on `next/font/local` used elsewhere, and on paths that do not start with `./files/`. The full note, with conversion tips, is in `fonts/README.md`.
+
+## Tests
+
+```bash
+npm run test         # once, as in CI
+npm run test:watch   # while developing
+```
+
+- Name files `*.test.ts` / `*.test.tsx` next to the code, or keep helpers and fixtures under `__tests__/`. Anything outside the module folders fails the contract.
+- Import `describe`, `it`, `expect`, `vi` from `vitest`; globals are off.
+- `@/...` resolves like in the app and `server-only` is stubbed, so `lib/` code is importable from a test. Test files are exempt from the `import "server-only"` requirement.
+- Environment: use `vi.stubEnv("EXAMPLE_MODULE_SOURCE_URL", "...")` and `vi.unstubAllEnvs()` in `afterEach`. The `EXAMPLE_MODULE_` prefix rule still applies in tests.
+- No DOM is available. For component tests with `jsdom` / Testing Library, ask the internal team to approve the packages (INTEGRATION.md section 4).
+- The import into the main project leaves test files out; only this repository's CI runs them.
+
+Examples: `lib/transform.test.ts`, `lib/env.test.ts`, `src/app/api/example-module/_lib/store.test.ts`.
 
 ## Sample data source
 
